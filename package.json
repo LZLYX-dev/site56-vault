@@ -1,0 +1,49 @@
+{
+  "name": "bsc-city-chain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hardhat 3 workspace for the BSC city vault contracts.",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "clean": "hardhat clean",
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node --network hardhat",
+    "typecheck": "tsc --noEmit",
+    "deploy:testnet:check": "hardhat run scripts/check-testnet-deployment.ts --network bscTestnet",
+    "deploy:testnet": "hardhat run scripts/deploy-testnet.ts --network bscTestnet",
+    "flap:testnet:upload-metadata": "hardhat run scripts/upload-flap-testnet-metadata.ts --network hardhat",
+    "flap:testnet:mine-salt": "hardhat run scripts/mine-flap-testnet-salt.ts --network hardhat",
+    "flap:testnet:preflight": "hardhat run scripts/preflight-flap-testnet-launch.ts --network bscTestnet",
+    "flap:testnet:broadcast": "hardhat run scripts/broadcast-flap-testnet-launch.ts --network bscTestnet",
+    "flap:testnet:verify": "hardhat run --no-compile scripts/verify-flap-testnet-launch.ts --network bscTestnetReadOnly",
+    "flap:testnet:play:check": "hardhat run --no-compile scripts/play-flap-testnet.ts --network bscTestnetReadOnly",
+    "flap:testnet:play": "hardhat run --no-compile scripts/play-flap-testnet.ts --network bscTestnet",
+    "flap:testnet:oracle:check": "hardhat run --no-compile scripts/configure-flap-testnet-play-oracle.ts --network bscTestnetReadOnly",
+    "flap:testnet:oracle:set": "hardhat run --no-compile scripts/configure-flap-testnet-play-oracle.ts --network bscTestnet",
+    "v2:testnet:infra:preflight": "hardhat run --no-compile scripts/preflight-flap-testnet-v2-infra.ts --network bscTestnetReadOnly",
+    "v2:testnet:infra:broadcast": "hardhat run --no-compile scripts/broadcast-flap-testnet-v2-infra.ts --network bscTestnet",
+    "v2:testnet:infra:verify": "hardhat run --no-compile scripts/verify-flap-testnet-v2-infra.ts --network bscTestnetReadOnly",
+    "v2:testnet:metadata:upload": "hardhat run --no-compile scripts/upload-flap-testnet-v2-metadata.ts --network bscTestnetReadOnly",
+    "v2:testnet:launch:preflight": "hardhat run --no-compile scripts/preflight-flap-testnet-v2-launch.ts --network bscTestnetReadOnly",
+    "site56:mainnet:metadata:upload": "hardhat run --no-compile scripts/upload-site56-mainnet-metadata.ts --network hardhat",
+    "site56:mainnet:mine-salt": "hardhat run --no-compile scripts/mine-site56-mainnet-salt.ts --network hardhat",
+    "site56:mainnet:fork": "hardhat run --no-compile scripts/fork-site56-mainnet.ts --network bscMainnetFork",
+    "site56:mainnet:preflight": "hardhat run --no-compile scripts/preflight-site56-mainnet.ts --network bscMainnetReadOnly",
+    "site56:mainnet:launch-tx:preflight": "hardhat run --no-compile scripts/preflight-site56-mainnet-launch-transaction.ts --network bscMainnetReadOnly",
+    "site56:mainnet:launch-tx:payload": "tsx scripts/generate-site56-mainnet-launch-payload.ts"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.6.1",
+    "@openzeppelin/contracts-upgradeable": "4.9.6"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "5.0.7",
+    "@types/node": "^22.0.0",
+    "hardhat": "3.14.0",
+    "typescript": "^5.8.0"
+  }
+}

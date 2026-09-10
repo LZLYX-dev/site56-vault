@@ -1,0 +1,19 @@
+node_modules/
+cache/
+artifacts/
+coverage/
+dist/
+
+*.log
+.env
+.env.*
+!.env.example
+
+# Never keep deployment secrets or local key material in this repository.
+secrets/
+*.keystore
+*.pem
+*.key
+
+# Internal audit/application material is stored outside the public repository.
+/docs/
