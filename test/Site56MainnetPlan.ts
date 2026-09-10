@@ -8,6 +8,7 @@ import {
   SITE56_BUY_TAX_BPS,
   SITE56_DISPATCH_THRESHOLD_WEI,
   SITE56_FIRST_CLAIM_TREASURY,
+  SITE56_LAUNCH_CREATOR,
   SITE56_NAME,
   SITE56_SELL_TAX_BPS,
   SITE56_SYMBOL,
@@ -30,6 +31,10 @@ describe("Site 56 immutable mainnet launch plan", function () {
 
     assert.equal(params.name, SITE56_NAME);
     assert.equal(params.symbol, SITE56_SYMBOL);
+    assert.equal(
+      SITE56_LAUNCH_CREATOR,
+      getAddress("0xFbf4a9E11C1Af4ACd29e39fec4fccF8ee4ed2128"),
+    );
     assert.equal(params.buyTaxRate, SITE56_BUY_TAX_BPS);
     assert.equal(params.sellTaxRate, SITE56_SELL_TAX_BPS);
     assert.equal(params.taxDuration, SITE56_TAX_DURATION_SECONDS);
