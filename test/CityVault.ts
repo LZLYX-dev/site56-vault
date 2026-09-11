@@ -12,10 +12,7 @@ import {
   zeroAddress,
 } from "viem";
 
-const connection = await network.create({
-  network: "hardhat",
-  override: { chainId: 97 },
-});
+const connection = await network.create();
 const { viem, networkHelpers } = connection;
 
 const token = (amount: string) => parseUnits(amount, 18);
@@ -28,8 +25,6 @@ const LEVEL_THREE_ANCHOR_CAP = token("4798248");
 const NO_CAPTURE_DELAY = 0n;
 const DISPATCH_THRESHOLD = parseEther("100");
 const LARGE_TOKEN_BALANCE = token("250000000");
-const TESTNET_GUARDIAN =
-  "0x76Fa8C526f8Bc27ba6958B76DeEf92a0dbE46950" as const;
 
 type LooseContract = any;
 type LooseWallet = any;
@@ -41,13 +36,13 @@ function tupleField<T>(value: any, name: string, index: number): T {
 function cityView(raw: any) {
   return {
     owner: tupleField<string>(raw, "owner", 0),
-    lastCaptureAt: BigInt(tupleField<bigint>(raw, "lastCaptureAt", 1)),
-    level: Number(tupleField<number | bigint>(raw, "level", 2)),
-    weight: Number(tupleField<number | bigint>(raw, "weight", 3)),
+    level: Number(tupleField<number | bigint>(raw, "level", 1)),
+    weight: Number(tupleField<number | bigint>(raw, "weight", 2)),
     capturesInCycle: Number(
-      tupleField<number | bigint>(raw, "capturesInCycle", 4),
+      tupleField<number | bigint>(raw, "capturesInCycle", 3),
     ),
-    anchorPrice: BigInt(tupleField<bigint>(raw, "anchorPrice", 5)),
+    anchorPrice: BigInt(tupleField<bigint>(raw, "anchorPrice", 4)),
+    lastCaptureAt: BigInt(tupleField<bigint>(raw, "lastCaptureAt", 5)),
     rewardDebt: BigInt(
       raw?.rewardDebtScaled ?? tupleField<bigint>(raw, "rewardDebt", 6),
     ),
@@ -231,7 +226,7 @@ describe("CityVault", { concurrency: false }, function () {
     const { deployer, treasury, erc20, vault } =
       await networkHelpers.loadFixture(deployFixture);
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       viem.deployContract("CityVault", [
         erc20.address,
         deployer.account.address,
@@ -239,9 +234,10 @@ describe("CityVault", { concurrency: false }, function () {
         0n,
         NO_CAPTURE_DELAY,
       ]),
-      "Invalid dispatch threshold",
+      vault,
+      "InvalidDispatchThreshold",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       viem.deployContract("CityVault", [
         erc20.address,
         deployer.account.address,
@@ -249,7 +245,8 @@ describe("CityVault", { concurrency: false }, function () {
         DISPATCH_THRESHOLD,
         1n,
       ]),
-      "Capture delay must be zero",
+      vault,
+      "NonzeroCaptureDelay",
     );
     assert.equal(await vault.read.captureCooldown(), NO_CAPTURE_DELAY);
   });
@@ -258,22 +255,25 @@ describe("CityVault", { concurrency: false }, function () {
     const { bob, vault } = await networkHelpers.loadFixture(deployFixture);
     const bobVault = await asWallet("CityVault", vault.address, bob);
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       vault.read.quoteCapture([0]),
-      "City not claimed",
+      vault,
+      "CityNotClaimed",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.settleCity([0]),
-      "City not claimed",
+      vault,
+      "CityNotClaimed",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.captureCity([
         0,
         maxUint256,
         await deadlineAfter(),
         0n,
       ]),
-      "City not claimed",
+      vault,
+      "CityNotClaimed",
     );
   });
 
@@ -282,14 +282,15 @@ describe("CityVault", { concurrency: false }, function () {
     await claimCity(vault, alice, 0);
     const aliceVault = await asWallet("CityVault", vault.address, alice);
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       aliceVault.write.captureCity([
         0,
         maxUint256,
         await deadlineAfter(),
         0n,
       ]),
-      "Current owner cannot capture",
+      vault,
+      "CurrentOwnerCannotCapture",
     );
   });
 
@@ -297,9 +298,10 @@ describe("CityVault", { concurrency: false }, function () {
     const { bob, vault } = await networkHelpers.loadFixture(deployFixture);
     const bobVault = await asWallet("CityVault", vault.address, bob);
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.claimRevenue(),
-      "Nothing to claim",
+      vault,
+      "NothingToClaim",
     );
   });
 
@@ -335,13 +337,15 @@ describe("CityVault", { concurrency: false }, function () {
     assert.equal(await erc20.read.totalSupply(), supplyBefore);
 
     const aliceVault = await asWallet("CityVault", vault.address, alice);
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       aliceVault.write.claimCity([0, FIRST_CLAIM_PRICE]),
-      "City already claimed",
+      vault,
+      "CityAlreadyClaimed",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       aliceVault.write.claimCity([56, FIRST_CLAIM_PRICE]),
-      "Invalid city ID",
+      vault,
+      "InvalidCityId",
     );
   });
 
@@ -478,23 +482,25 @@ describe("CityVault", { concurrency: false }, function () {
     const quote = captureQuote(await vault.read.quoteCapture([0]));
     const latest = BigInt(await networkHelpers.time.latest());
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.captureCity([
         0,
         quote.requiredPayment - 1n,
         latest + 3_600n,
         0n,
       ]),
-      "Payment exceeds maximum",
+      vault,
+      "PaymentExceedsMaximum",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.captureCity([
         0,
         quote.requiredPayment,
         latest - 1n,
         0n,
       ]),
-      "Deadline expired",
+      vault,
+      "DeadlineExpired",
     );
 
   });
@@ -580,9 +586,10 @@ describe("CityVault", { concurrency: false }, function () {
       treasury.account.address,
     ]);
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       aliceVault.write.claimCity([0, FIRST_CLAIM_PRICE]),
-      "Tax token transfer mismatch",
+      vault,
+      "TaxTokenTransferMismatch",
     );
 
     const city = cityView(await vault.read.getCity([0]));
@@ -611,9 +618,10 @@ describe("CityVault", { concurrency: false }, function () {
       overflowAnchor,
     );
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       vault.read.quoteCapture([0]),
-      "Capture price overflow",
+      vault,
+      "CapturePriceOverflow",
     );
   });
 
@@ -631,9 +639,10 @@ describe("CityVault", { concurrency: false }, function () {
     );
 
     const outsiderVault = await asWallet("CityVault", vault.address, outsider);
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       outsiderVault.write.dispatchRevenue(),
-      "Revenue below threshold",
+      vault,
+      "RevenueBelowThreshold",
     );
 
     await deployer.sendTransaction({ to: vault.address, value: 1n });
@@ -928,14 +937,15 @@ describe("CityVault", { concurrency: false }, function () {
     const before = cityView(await vault.read.getCity([0]));
     const quote = captureQuote(await vault.read.quoteCapture([0]));
     const bobVault = await asWallet("CityVault", vault.address, bob);
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       bobVault.write.captureCity([
         0,
         quote.requiredPayment,
         await deadlineAfter(),
         parseEther("30") / 112n + 1n,
       ]),
-      "Compensation below minimum",
+      vault,
+      "CompensationBelowMinimum",
     );
     const afterRevert = cityView(await vault.read.getCity([0]));
     assert.deepEqual(afterRevert, before);
@@ -973,65 +983,14 @@ describe("CityVault", { concurrency: false }, function () {
 
     const credit = await vault.read.claimableDividend([rejecting.address]);
     assert.equal(credit, parseEther("70") / CITY_COUNT);
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       rejecting.write.claimRevenue([vault.address]),
-      "Native transfer failed",
+      vault,
+      "NativeTransferFailed",
     );
     assert.equal(
       await vault.read.claimableDividend([rejecting.address]),
       credit,
-    );
-  });
-
-  it("restricts black-swan withdrawals to the immutable Flap Guardian", async function () {
-    const { deployer, outsider, dave, erc20, vault } =
-      await networkHelpers.loadFixture(deployFixture);
-    const outsiderVault = await asWallet("CityVault", vault.address, outsider);
-
-    await viem.assertions.revertWith(
-      outsiderVault.write.emergencyWithdrawNative([dave.account.address]),
-      "Only Flap Guardian",
-    );
-    await viem.assertions.revertWith(
-      outsiderVault.write.emergencyWithdrawToken([
-        erc20.address,
-        dave.account.address,
-      ]),
-      "Only Flap Guardian",
-    );
-
-    const nativeAmount = parseEther("1");
-    const tokenAmount = token("123");
-    await sendNativeRevenue(vault, deployer, nativeAmount);
-    await erc20.write.mint([vault.address, tokenAmount]);
-
-    await networkHelpers.impersonateAccount(TESTNET_GUARDIAN);
-    await networkHelpers.setBalance(TESTNET_GUARDIAN, parseEther("10"));
-    const guardian = await viem.getWalletClient(TESTNET_GUARDIAN);
-    const guardianVault = await asWallet("CityVault", vault.address, guardian);
-    const publicClient = await viem.getPublicClient();
-    const recipientNativeBefore = await publicClient.getBalance({
-      address: dave.account.address,
-    });
-    const recipientTokenBefore = await erc20.read.balanceOf([
-      dave.account.address,
-    ]);
-
-    await guardianVault.write.emergencyWithdrawNative([dave.account.address]);
-    await guardianVault.write.emergencyWithdrawToken([
-      erc20.address,
-      dave.account.address,
-    ]);
-
-    assert.equal(await publicClient.getBalance({ address: vault.address }), 0n);
-    assert.equal(
-      await publicClient.getBalance({ address: dave.account.address }),
-      recipientNativeBefore + nativeAmount,
-    );
-    assert.equal(await erc20.read.balanceOf([vault.address]), 0n);
-    assert.equal(
-      await erc20.read.balanceOf([dave.account.address]),
-      recipientTokenBefore + tokenAmount,
     );
   });
 

@@ -270,23 +270,25 @@ describe("CityVaultFactory", { concurrency: false }, function () {
       deployer,
     );
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       deployerFactory.write.newVault([
         token.address,
         zeroAddress,
         creator.account.address,
         vaultData,
       ]),
-      "Only VaultPortal",
+      factory,
+      "OnlyVaultPortal",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       portalFactory.write.newVault([
         token.address,
         creator.account.address,
         creator.account.address,
         vaultData,
       ]),
-      "Native BNB quote only",
+      factory,
+      "UnsupportedQuoteToken",
     );
   });
 
@@ -316,9 +318,10 @@ describe("CityVaultFactory", { concurrency: false }, function () {
     ];
 
     for (const call of calls) {
-      await viem.assertions.revertWith(
+      await viem.assertions.revertWithCustomError(
         call(),
-        "Zero address",
+        factory,
+        "ZeroAddress",
       );
     }
   });
@@ -340,17 +343,22 @@ describe("CityVaultFactory", { concurrency: false }, function () {
       ),
     ] as const;
 
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomError(
       portalFactory.write.newVault(args(0n, NO_CAPTURE_DELAY)),
-      "Invalid dispatch threshold",
+      factory,
+      "ZeroDispatchThreshold",
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomErrorWithArgs(
       portalFactory.write.newVault(args(DISPATCH_THRESHOLD, 1n)),
-      "Capture delay must be zero",
+      factory,
+      "NonzeroCaptureDelay",
+      [1n],
     );
-    await viem.assertions.revertWith(
+    await viem.assertions.revertWithCustomErrorWithArgs(
       portalFactory.write.newVault(args(DISPATCH_THRESHOLD, 1n << 64n)),
-      "Capture delay must be zero",
+      factory,
+      "NonzeroCaptureDelay",
+      [1n << 64n],
     );
   });
 

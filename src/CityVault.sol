@@ -18,10 +18,9 @@ import {
 /// @title CityVault
 /// @notice Immutable implementation of the Site 56 city capture and revenue system.
 /// @dev Internally reviewed for the Site 56 mainnet release; no independent audit was
-///      commissioned. The contract has no administrator or upgrade hook. Its economic
-///      parameters and ordinary asset routes are immutable. Flap tax revenue arrives
-///      as native BNB. Flap's chain-specific Guardian retains only the mandatory
-///      emergency full-balance recovery functions required by Vault Rule 009.
+///      commissioned. The contract has no administrator, upgrade hook or rescue
+///      function. Its economic parameters and asset routes are immutable. Flap tax
+///      revenue arrives as native BNB.
 contract CityVault is VaultBaseV2, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Strings for uint256;
@@ -78,6 +77,27 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         ///      owner or newly added weight from claiming historical revenue.
         uint256 rewardDebtScaled;
     }
+
+    // -------------------------------------------------------------------------
+    // Errors
+    // -------------------------------------------------------------------------
+
+    error ZeroAddress();
+    error InvalidDispatchThreshold();
+    error NonzeroCaptureDelay(uint256 provided);
+    error InvalidCityId(uint256 cityId);
+    error CityAlreadyClaimed(uint8 cityId);
+    error CityNotClaimed(uint8 cityId);
+    error InvalidClaimPayment(uint256 supplied, uint256 required);
+    error CurrentOwnerCannotCapture(uint8 cityId);
+    error DeadlineExpired(uint256 deadline, uint256 currentTimestamp);
+    error PaymentExceedsMaximum(uint256 payment, uint256 maximum);
+    error CapturePriceOverflow(uint8 cityId, uint256 anchorPrice);
+    error TaxTokenTransferMismatch(uint256 expected, uint256 received);
+    error RevenueBelowThreshold(uint256 available, uint256 threshold);
+    error CompensationBelowMinimum(uint256 compensation, uint256 minimum);
+    error NothingToClaim();
+    error NativeTransferFailed(address recipient, uint256 amount);
 
     // -------------------------------------------------------------------------
     // Events
@@ -156,14 +176,6 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         uint256 totalAmount
     );
 
-    event EmergencyWithdrawNative(address indexed to, uint256 amount);
-    event EmergencyWithdrawToken(address indexed token, address indexed to, uint256 amount);
-
-    modifier onlyGuardian() {
-        require(msg.sender == _getGuardian(), "Only Flap Guardian");
-        _;
-    }
-
     // -------------------------------------------------------------------------
     // Immutable configuration
     // -------------------------------------------------------------------------
@@ -216,12 +228,11 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         uint256 dispatchThreshold_,
         uint64 legacyCaptureDelay_
     ) {
-        require(
-            taxToken_ != address(0) && creator_ != address(0) && treasury_ != address(0),
-            "Zero address"
-        );
-        require(dispatchThreshold_ != 0, "Invalid dispatch threshold");
-        require(legacyCaptureDelay_ == 0, "Capture delay must be zero");
+        if (taxToken_ == address(0) || creator_ == address(0) || treasury_ == address(0)) {
+            revert ZeroAddress();
+        }
+        if (dispatchThreshold_ == 0) revert InvalidDispatchThreshold();
+        if (legacyCaptureDelay_ != 0) revert NonzeroCaptureDelay(legacyCaptureDelay_);
 
         taxToken = IERC20(taxToken_);
         creator = creator_;
@@ -261,14 +272,14 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
     // -------------------------------------------------------------------------
 
     /// @notice Claims an unoccupied city for the fixed level-one base price.
-    function claimCity(uint256 cityId, uint256 payment) external nonReentrant {
+    function claimCity(uint8 cityId, uint256 payment) external nonReentrant {
         _checkCityId(cityId);
-        require(payment == LEVEL_1_BASE_PRICE, "Invalid claim payment");
+        if (payment != LEVEL_1_BASE_PRICE) {
+            revert InvalidClaimPayment(payment, LEVEL_1_BASE_PRICE);
+        }
 
-        uint8 cityIndex = uint8(cityId);
-
-        City storage city = _cities[cityIndex];
-        require(city.owner == address(0), "City already claimed");
+        City storage city = _cities[cityId];
+        if (city.owner != address(0)) revert CityAlreadyClaimed(cityId);
 
         // Attribute every pre-claim wei using the old vacancy set. This is a
         // forced checkpoint even when the public dispatch threshold is unmet.
@@ -282,7 +293,7 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         occupiedCityCount += 1;
         vacantWeight -= 1;
 
-        emit CityClaimed(cityIndex, msg.sender, payment, treasury);
+        emit CityClaimed(cityId, msg.sender, payment, treasury);
 
         // Once the city is complete, recycle every whole wei previously
         // reserved for vacant weight across all current city weights. The new
@@ -302,7 +313,7 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
     /// @dev The old owner receives an immediate token transfer worth 120% of
     ///      the reference price; the remainder is sent to Flap's black hole.
     function captureCity(
-        uint256 cityId,
+        uint8 cityId,
         uint256 maxPayment,
         uint256 deadline,
         uint256 minCompOut
@@ -310,12 +321,10 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         _checkCityId(cityId);
         _checkDeadline(deadline);
 
-        uint8 cityIndex = uint8(cityId);
-
-        City storage city = _cities[cityIndex];
+        City storage city = _cities[cityId];
         address previousOwner = city.owner;
-        require(previousOwner != address(0), "City not claimed");
-        require(previousOwner != msg.sender, "Current owner cannot capture");
+        if (previousOwner == address(0)) revert CityNotClaimed(cityId);
+        if (previousOwner == msg.sender) revert CurrentOwnerCannotCapture(cityId);
 
         // Attribute every pre-capture wei under the old owner and old weight,
         // including a tail below the public dispatch threshold.
@@ -329,14 +338,16 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
             bool willUpgrade,
             ,
             uint256 compensation
-        ) = _quoteCapture(city, compensationAvailable);
+        ) = _quoteCapture(cityId, city, compensationAvailable);
 
-        require(payment <= maxPayment, "Payment exceeds maximum");
-        require(compensation >= minCompOut, "Compensation below minimum");
+        if (payment > maxPayment) revert PaymentExceedsMaximum(payment, maxPayment);
+        if (compensation < minCompOut) {
+            revert CompensationBelowMinimum(compensation, minCompOut);
+        }
 
         // Complete every accounting and ownership effect before interacting
         // with the ERC-20 token (CEI). A later token failure reverts all effects.
-        _settleCity(cityIndex, city);
+        _settleCity(cityId, city);
         uint8 captureNumber = city.capturesInCycle + 1;
         city.owner = msg.sender;
         city.lastCaptureAt = uint64(block.timestamp);
@@ -346,7 +357,7 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
             : payment;
 
         emit CityCaptured(
-            cityIndex,
+            cityId,
             previousOwner,
             msg.sender,
             referencePrice,
@@ -357,7 +368,7 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         );
 
         if (willUpgrade) {
-            _upgradeCity(cityIndex, city, compensation);
+            _upgradeCity(cityId, city, compensation);
         } else {
             // Ownership changed, so discard the former owner's sub-wei reward
             // remainder and start the new owner's accrual at the current index.
@@ -370,7 +381,7 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
             if (city.level >= MAX_LEVEL && captureNumber >= CAPTURES_PER_UPGRADE) {
                 city.capturesInCycle = 0;
                 emit LevelThreeCycleCompleted(
-                    cityIndex,
+                    cityId,
                     msg.sender,
                     city.anchorPrice
                 );
@@ -384,12 +395,11 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
 
     /// @notice Settles one city's accrued dividend into its current owner's credit.
     /// @dev Permissionless: callers can help any owner update accounting.
-    function settleCity(uint256 cityId) external returns (uint256 amount) {
+    function settleCity(uint8 cityId) external returns (uint256 amount) {
         _checkCityId(cityId);
-        uint8 cityIndex = uint8(cityId);
-        City storage city = _cities[cityIndex];
-        require(city.owner != address(0), "City not claimed");
-        return _settleCity(cityIndex, city);
+        City storage city = _cities[cityId];
+        if (city.owner == address(0)) revert CityNotClaimed(cityId);
+        return _settleCity(cityId, city);
     }
 
     // -------------------------------------------------------------------------
@@ -400,7 +410,9 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
     /// @dev O(1), permissionless and performs no external calls.
     function dispatchRevenue() external {
         uint256 grossAmount = undispatchedRevenue;
-        require(grossAmount >= dispatchThreshold, "Revenue below threshold");
+        if (grossAmount < dispatchThreshold) {
+            revert RevenueBelowThreshold(grossAmount, dispatchThreshold);
+        }
 
         _checkpointRevenue();
     }
@@ -410,70 +422,28 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         uint256 dividendAmount = claimableDividend[msg.sender];
         uint256 compensationAmount = claimableCompensation[msg.sender];
         amount = dividendAmount + compensationAmount;
-        require(amount != 0, "Nothing to claim");
+        if (amount == 0) revert NothingToClaim();
 
         claimableDividend[msg.sender] = 0;
         claimableCompensation[msg.sender] = 0;
 
         (bool success,) = payable(msg.sender).call{value: amount}("");
-        require(success, "Native transfer failed");
+        if (!success) revert NativeTransferFailed(msg.sender, amount);
 
         emit NativeRevenueClaimed(msg.sender, dividendAmount, compensationAmount, amount);
-    }
-
-    /// @notice Flap Guardian black-swan recovery required by Vault Rule 009.
-    function emergencyWithdrawNative(address to) external onlyGuardian nonReentrant {
-        require(to != address(0), "Zero address");
-        uint256 bal = address(this).balance;
-        if (bal > 0) {
-            (bool ok,) = to.call{value: bal}("");
-            require(ok, "Native transfer failed");
-            emit EmergencyWithdrawNative(to, bal);
-        }
-    }
-
-    /// @notice Flap Guardian stuck-token recovery required by Vault Rule 009.
-    function emergencyWithdrawToken(address token, address to) external onlyGuardian nonReentrant {
-        require(token != address(0) && to != address(0), "Zero address");
-        uint256 bal = IERC20(token).balanceOf(address(this));
-        if (bal > 0) {
-            IERC20(token).safeTransfer(to, bal);
-            emit EmergencyWithdrawToken(token, to, bal);
-        }
     }
 
     // -------------------------------------------------------------------------
     // Views
     // -------------------------------------------------------------------------
 
-    function getCity(uint256 cityId)
-        external
-        view
-        returns (
-            address owner,
-            uint256 lastCaptureAt,
-            uint256 level,
-            uint256 weight,
-            uint256 capturesInCycle,
-            uint256 anchorPrice,
-            uint256 rewardDebtScaled
-        )
-    {
+    function getCity(uint8 cityId) external view returns (City memory city) {
         _checkCityId(cityId);
-        City storage city = _cities[uint8(cityId)];
-        return (
-            city.owner,
-            city.lastCaptureAt,
-            city.level,
-            city.weight,
-            city.capturesInCycle,
-            city.anchorPrice,
-            city.rewardDebtScaled
-        );
+        return _cities[cityId];
     }
 
     /// @notice Quotes the exact next capture and its currently available compensation.
-    function quoteCapture(uint256 cityId)
+    function quoteCapture(uint8 cityId)
         public
         view
         returns (
@@ -482,21 +452,21 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
             uint256 previousOwnerAmount,
             uint256 burnAmount,
             bool willUpgrade,
-            uint256 nextLevel,
+            uint8 nextLevel,
             uint256 compensation
         )
     {
         _checkCityId(cityId);
-        uint8 cityIndex = uint8(cityId);
-        City storage city = _cities[cityIndex];
-        require(city.owner != address(0), "City not claimed");
+        City storage city = _cities[cityId];
+        if (city.owner == address(0)) revert CityNotClaimed(cityId);
 
         uint256 projectedCompensationAvailable = _projectedCompensationAvailable();
 
-        return _quoteCapture(city, projectedCompensationAvailable);
+        return _quoteCapture(cityId, city, projectedCompensationAvailable);
     }
 
     function _quoteCapture(
+        uint8 cityId,
         City storage city,
         uint256 availableCompensation
     )
@@ -516,7 +486,9 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         referencePrice = city.anchorPrice;
         // A clear protocol error is preferable to an opaque mulDiv overflow at
         // the theoretical end of uint256 price space.
-        require(referencePrice <= MAX_CAPTURE_REFERENCE_PRICE, "Capture price overflow");
+        if (referencePrice > MAX_CAPTURE_REFERENCE_PRICE) {
+            revert CapturePriceOverflow(cityId, referencePrice);
+        }
 
         payment = Math.mulDiv(referencePrice, CAPTURE_PAYMENT_BPS, BPS_DENOMINATOR);
         previousOwnerAmount = Math.mulDiv(referencePrice, PREVIOUS_OWNER_BPS, BPS_DENOMINATOR);
@@ -530,9 +502,9 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
             : 0;
     }
 
-    function pendingCityDividend(uint256 cityId) public view returns (uint256 amount) {
+    function pendingCityDividend(uint8 cityId) public view returns (uint256 amount) {
         _checkCityId(cityId);
-        City storage city = _cities[uint8(cityId)];
+        City storage city = _cities[cityId];
         if (city.owner == address(0)) return 0;
 
         uint256 accruedScaled = uint256(city.weight) * accDividendPerWeight;
@@ -547,20 +519,19 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         return (claimableDividend[account], claimableCompensation[account]);
     }
 
-    function levelBasePrice(uint256 level) public pure returns (uint256) {
+    function levelBasePrice(uint8 level) public pure returns (uint256) {
         if (level == 1) return LEVEL_1_BASE_PRICE;
         if (level == 2) return LEVEL_2_BASE_PRICE;
         if (level == 3) return LEVEL_3_BASE_PRICE;
-        require(false, "Invalid level");
-        return 0;
+        revert InvalidCityId(level);
     }
 
-    function previewUpgradeCompensation(uint256 currentLevel)
+    function previewUpgradeCompensation(uint8 currentLevel)
         external
         view
-        returns (uint256 projectedPool, uint256 remainingSlots, uint256 compensation)
+        returns (uint256 projectedPool, uint16 remainingSlots, uint256 compensation)
     {
-        require(currentLevel != 0 && currentLevel < MAX_LEVEL, "Invalid level");
+        if (currentLevel == 0 || currentLevel >= MAX_LEVEL) revert InvalidCityId(currentLevel);
         projectedPool = _projectedCompensationAvailable();
         remainingSlots = remainingUpgradeSlots;
         if (remainingSlots != 0) compensation = projectedPool / remainingSlots;
@@ -583,24 +554,26 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         schema.vaultType = "Site56CityVault";
         schema.description =
             "Immutable 56-city capture, weighted-dividend and upgrade-compensation system; internally reviewed without an independent audit.";
-        schema.methods = new VaultMethodSchema[](11);
+        schema.methods = new VaultMethodSchema[](8);
 
-        schema.methods[0] = _method("getCity", "Read one city's owner, level, weight and accounting state.", false);
-        schema.methods[0].inputs = _oneField("cityId", "uint256", "City ID from 0 to 55", 0);
+        schema.methods[0].name = "getCity";
+        schema.methods[0].description = "Read one city's owner, level, weight and accounting state.";
+        schema.methods[0].inputs = _oneField("cityId", "uint8", "City ID from 0 to 55", 0);
         schema.methods[0].outputs = new FieldDescriptor[](7);
         schema.methods[0].outputs[0] = FieldDescriptor("owner", "address", "Current city owner", 0);
         schema.methods[0].outputs[1] = FieldDescriptor("lastCaptureAt", "time", "Last ownership change", 0);
-        schema.methods[0].outputs[2] = FieldDescriptor("level", "uint256", "City level", 0);
-        schema.methods[0].outputs[3] = FieldDescriptor("weight", "uint256", "Dividend weight", 0);
+        schema.methods[0].outputs[2] = FieldDescriptor("level", "uint8", "City level", 0);
+        schema.methods[0].outputs[3] = FieldDescriptor("weight", "uint8", "Dividend weight", 0);
         schema.methods[0].outputs[4] =
-            FieldDescriptor("capturesInCycle", "uint256", "Captures in current cycle", 0);
+            FieldDescriptor("capturesInCycle", "uint8", "Captures in current cycle", 0);
         schema.methods[0].outputs[5] =
             FieldDescriptor("anchorPrice", "uint256", "Current token reference price", 18);
         schema.methods[0].outputs[6] =
             FieldDescriptor("rewardDebtScaled", "uint256", "Internal scaled reward debt", 0);
 
-        schema.methods[1] = _method("quoteCapture", "Preview the exact next capture payment, burn and compensation.", false);
-        schema.methods[1].inputs = _oneField("cityId", "uint256", "City ID from 0 to 55", 0);
+        schema.methods[1].name = "quoteCapture";
+        schema.methods[1].description = "Preview the exact next capture payment, burn and compensation.";
+        schema.methods[1].inputs = _oneField("cityId", "uint8", "City ID from 0 to 55", 0);
         schema.methods[1].outputs = new FieldDescriptor[](7);
         schema.methods[1].outputs[0] =
             FieldDescriptor("referencePrice", "uint256", "Current anchor price", 18);
@@ -613,57 +586,51 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         schema.methods[1].outputs[4] =
             FieldDescriptor("willUpgrade", "bool", "Whether this capture upgrades the city", 0);
         schema.methods[1].outputs[5] =
-            FieldDescriptor("nextLevel", "uint256", "Level after this capture", 0);
+            FieldDescriptor("nextLevel", "uint8", "Level after this capture", 0);
         schema.methods[1].outputs[6] =
             FieldDescriptor("compensation", "uint256", "Currently quoted BNB compensation", 18);
 
-        schema.methods[2] = _method("pendingCityDividend", "Read one city's unsettled native-BNB dividend.", false);
-        schema.methods[2].inputs = _oneField("cityId", "uint256", "City ID from 0 to 55", 0);
+        schema.methods[2].name = "pendingCityDividend";
+        schema.methods[2].description = "Read one city's unsettled native-BNB dividend.";
+        schema.methods[2].inputs = _oneField("cityId", "uint8", "City ID from 0 to 55", 0);
         schema.methods[2].outputs =
             _oneField("amount", "uint256", "Unsettled native-BNB dividend", 18);
 
-        schema.methods[3] = _method("accountState", "Read an account's settled dividend and compensation credits.", false);
-        schema.methods[3].inputs = _oneField("account", "address", "Account to inspect", 0);
-        schema.methods[3].outputs = new FieldDescriptor[](2);
-        schema.methods[3].outputs[0] = FieldDescriptor("dividendCredit", "uint256", "Settled native-BNB dividend", 18);
-        schema.methods[3].outputs[1] = FieldDescriptor("compensationCredit", "uint256", "Settled native-BNB compensation", 18);
-
-        schema.methods[4] = _method("levelBasePrice", "Read the fixed tax-token base price for city level 1, 2 or 3.", false);
-        schema.methods[4].inputs = _oneField("level", "uint256", "City level from 1 to 3", 0);
-        schema.methods[4].outputs = _oneField("price", "uint256", "Level base price", 18);
-
-        schema.methods[5] = _method("previewUpgradeCompensation", "Preview the projected native-BNB compensation for the next upgrade.", false);
-        schema.methods[5].inputs = _oneField("currentLevel", "uint256", "Current city level 1 or 2", 0);
-        schema.methods[5].outputs = new FieldDescriptor[](3);
-        schema.methods[5].outputs[0] = FieldDescriptor("projectedPool", "uint256", "Projected compensation pool", 18);
-        schema.methods[5].outputs[1] = FieldDescriptor("remainingSlots", "uint256", "Remaining network-wide upgrade slots", 0);
-        schema.methods[5].outputs[2] = FieldDescriptor("compensation", "uint256", "Projected compensation", 18);
-
-        schema.methods[6] = _method("claimCity", "Claim an empty city for 560,000 tax tokens.", true);
-        schema.methods[6].inputs = new FieldDescriptor[](2);
-        schema.methods[6].inputs[0] = FieldDescriptor("cityId", "uint256", "City ID from 0 to 55", 0);
-        schema.methods[6].inputs[1] =
+        schema.methods[3].name = "claimCity";
+        schema.methods[3].description = "Claim an empty city for 560,000 tax tokens.";
+        schema.methods[3].inputs = new FieldDescriptor[](2);
+        schema.methods[3].inputs[0] = FieldDescriptor("cityId", "uint8", "City ID from 0 to 55", 0);
+        schema.methods[3].inputs[1] =
             FieldDescriptor("payment", "uint256", "Must equal exactly 560,000 tokens", 18);
-        schema.methods[6].approvals = _taxTokenApproval("payment");
+        schema.methods[3].approvals = _taxTokenApproval("payment");
+        schema.methods[3].isWriteMethod = true;
 
-        schema.methods[7] = _method("captureCity", "Capture a city with payment, deadline and compensation slippage limits.", true);
-        schema.methods[7].inputs = new FieldDescriptor[](4);
-        schema.methods[7].inputs[0] = FieldDescriptor("cityId", "uint256", "City ID from 0 to 55", 0);
-        schema.methods[7].inputs[1] =
+        schema.methods[4].name = "captureCity";
+        schema.methods[4].description = "Capture a city with payment, deadline and compensation slippage limits.";
+        schema.methods[4].inputs = new FieldDescriptor[](4);
+        schema.methods[4].inputs[0] = FieldDescriptor("cityId", "uint8", "City ID from 0 to 55", 0);
+        schema.methods[4].inputs[1] =
             FieldDescriptor("maxPayment", "uint256", "Maximum token payment", 18);
-        schema.methods[7].inputs[2] = FieldDescriptor("deadline", "time", "Transaction deadline", 0);
-        schema.methods[7].inputs[3] =
+        schema.methods[4].inputs[2] = FieldDescriptor("deadline", "time", "Transaction deadline", 0);
+        schema.methods[4].inputs[3] =
             FieldDescriptor("minCompOut", "uint256", "Minimum BNB compensation", 18);
-        schema.methods[7].approvals = _taxTokenApproval("maxPayment");
+        schema.methods[4].approvals = _taxTokenApproval("maxPayment");
+        schema.methods[4].isWriteMethod = true;
 
-        schema.methods[8] = _method("dispatchRevenue", "Permissionlessly dispatch threshold-ready BNB; receive also dispatches automatically.", true);
+        schema.methods[5].name = "dispatchRevenue";
+        schema.methods[5].description =
+            "Permissionlessly dispatch threshold-ready BNB; receive also dispatches automatically.";
+        schema.methods[5].isWriteMethod = true;
 
-        schema.methods[9] = _method("settleCity", "Credit one city's pending dividend to its current owner.", true);
-        schema.methods[9].inputs = _oneField("cityId", "uint256", "City ID from 0 to 55", 0);
-        schema.methods[9].outputs = _oneField("amount", "uint256", "Dividend credited by execution", 18);
+        schema.methods[6].name = "settleCity";
+        schema.methods[6].description = "Credit one city's pending dividend to its current owner.";
+        schema.methods[6].inputs = _oneField("cityId", "uint8", "City ID from 0 to 55", 0);
+        schema.methods[6].isWriteMethod = true;
 
-        schema.methods[10] = _method("claimRevenue", "Pull settled native dividends and upgrade compensation.", true);
-        schema.methods[10].outputs = _oneField("amount", "uint256", "Native BNB claimed by execution", 18);
+        schema.methods[7].name = "claimRevenue";
+        schema.methods[7].description = "Pull settled native dividends and upgrade compensation.";
+        schema.methods[7].isWriteMethod = true;
+
     }
 
     // -------------------------------------------------------------------------
@@ -832,15 +799,15 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
         uint256 balanceBefore = taxToken.balanceOf(address(this));
         taxToken.safeTransferFrom(from, address(this), amount);
         uint256 received = taxToken.balanceOf(address(this)) - balanceBefore;
-        require(received == amount, "Tax token transfer mismatch");
+        if (received != amount) revert TaxTokenTransferMismatch(amount, received);
     }
 
     function _checkCityId(uint256 cityId) private pure {
-        require(cityId < CITY_COUNT, "Invalid city ID");
+        if (cityId >= CITY_COUNT) revert InvalidCityId(cityId);
     }
 
     function _checkDeadline(uint256 deadline) private view {
-        require(block.timestamp <= deadline, "Deadline expired");
+        if (block.timestamp > deadline) revert DeadlineExpired(deadline, block.timestamp);
     }
 
     function _oneField(string memory name, string memory fieldType, string memory fieldDescription, uint8 decimals)
@@ -850,21 +817,6 @@ contract CityVault is VaultBaseV2, ReentrancyGuard {
     {
         fields = new FieldDescriptor[](1);
         fields[0] = FieldDescriptor(name, fieldType, fieldDescription, decimals);
-    }
-
-    function _method(string memory name, string memory methodDescription, bool isWriteMethod)
-        private
-        pure
-        returns (VaultMethodSchema memory method)
-    {
-        method.name = name;
-        method.description = methodDescription;
-        method.inputs = new FieldDescriptor[](0);
-        method.outputs = new FieldDescriptor[](0);
-        method.approvals = new ApproveAction[](0);
-        method.isInputArray = false;
-        method.isOutputArray = false;
-        method.isWriteMethod = isWriteMethod;
     }
 
     function _taxTokenApproval(string memory amountFieldName)

@@ -15,6 +15,8 @@ import type { LaunchParams } from "./flap-testnet-launch.js";
 export const SITE56_NAME = "Site 56";
 export const SITE56_SYMBOL = "SITE56";
 export const SITE56_WEBSITE = "https://site56.city";
+export const SITE56_TWITTER = "https://x.com/Site56_City";
+export const SITE56_GITHUB = "https://github.com/LZLYX-dev/site56-vault";
 export const SITE56_METADATA_DESCRIPTION =
   "Site 56 is an independent BNB Smart Chain meme city game: claim, capture and build 56 on-chain cities together. A 3% buy/sell tax routes 70% to city-weighted BNB distributions and 30% to deterministic upgrade compensation. Not affiliated with or endorsed by Binance, BNB Chain or Flap.";
 export const SITE56_IMAGE_SHA256 =
@@ -48,6 +50,7 @@ export const SITE56_MIGRATOR = 1;
 export const SITE56_DEX_THRESHOLD = 1;
 export const SITE56_DEX_ID = 0;
 export const SITE56_LP_FEE_PROFILE = 0;
+export const SITE56_INITIAL_BUY_QUOTE_WEI = 500_000_000_000_000_000n;
 export const SITE56_TAX_DURATION_SECONDS = 3_153_600_000n;
 export const SITE56_ANTI_FARMER_DURATION_SECONDS = 259_200n;
 export const SITE56_DISPATCH_THRESHOLD_WEI = 10_000_000_000_000_000n;
@@ -62,6 +65,7 @@ export type Site56LaunchInput = {
   treasury?: Address;
   dexThreshold?: number;
   dispatchThreshold?: bigint;
+  initialBuyQuote?: bigint;
 };
 
 export function buildSite56VaultData(
@@ -94,7 +98,7 @@ export function buildSite56LaunchParams(input: Site56LaunchInput): LaunchParams 
     salt: input.salt,
     migratorType: SITE56_MIGRATOR,
     quoteToken: zeroAddress,
-    quoteAmt: 0n,
+    quoteAmt: input.initialBuyQuote ?? SITE56_INITIAL_BUY_QUOTE_WEI,
     permitData: "0x",
     extensionID: zeroHash,
     extensionData: "0x",

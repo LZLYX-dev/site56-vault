@@ -14,6 +14,8 @@ import {VaultFactoryBaseV2} from "./flap/VaultFactoryBaseV2.sol";
 contract CityVaultDeployer {
     address private immutable _factory;
 
+    error OnlyFactory();
+
     constructor() {
         _factory = msg.sender;
     }
@@ -25,7 +27,7 @@ contract CityVaultDeployer {
         uint256 dispatchThreshold,
         uint64 legacyCaptureDelay
     ) external returns (address vault) {
-        require(msg.sender == _factory, "Only CityVaultFactory");
+        if (msg.sender != _factory) revert OnlyFactory();
         vault = address(
             new CityVault(taxToken, creator, treasury, dispatchThreshold, legacyCaptureDelay)
         );
@@ -50,6 +52,10 @@ contract CityVaultFactory is VaultFactoryBaseV2 {
     uint64 public constant NO_CAPTURE_DELAY = 0;
 
     CityVaultDeployer public immutable vaultDeployer;
+
+    error UnsupportedQuoteToken(address quoteToken);
+    error ZeroDispatchThreshold();
+    error NonzeroCaptureDelay(uint256 provided);
 
     event CityVaultCreated(
         address indexed vault,
@@ -202,17 +208,17 @@ contract CityVaultFactory is VaultFactoryBaseV2 {
         override
         returns (address vault)
     {
-        require(block.chainid == 56 || block.chainid == 97, "Unsupported chain");
-        require(msg.sender == _getVaultPortal(), "Only VaultPortal");
-        require(quoteToken == address(0), "Native BNB quote only");
-        require(taxToken != address(0) && creator != address(0), "Zero address");
+        if (block.chainid != 56 && block.chainid != 97) revert UnsupportedChain(block.chainid);
+        if (msg.sender != _getVaultPortal()) revert OnlyVaultPortal();
+        if (quoteToken != address(0)) revert UnsupportedQuoteToken(quoteToken);
+        if (taxToken == address(0) || creator == address(0)) revert ZeroAddress();
 
         (address treasury, uint256 dispatchThreshold, uint256 captureDelayRaw) =
             abi.decode(vaultData, (address, uint256, uint256));
 
-        require(treasury != address(0), "Zero address");
-        require(dispatchThreshold != 0, "Invalid dispatch threshold");
-        require(captureDelayRaw == NO_CAPTURE_DELAY, "Capture delay must be zero");
+        if (treasury == address(0)) revert ZeroAddress();
+        if (dispatchThreshold == 0) revert ZeroDispatchThreshold();
+        if (captureDelayRaw != NO_CAPTURE_DELAY) revert NonzeroCaptureDelay(captureDelayRaw);
 
         vault = vaultDeployer.deploy(taxToken, creator, treasury, dispatchThreshold, NO_CAPTURE_DELAY);
 
